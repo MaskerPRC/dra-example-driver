@@ -1,19 +1,3 @@
-/*
- * Copyright 2023 The Kubernetes Authors.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 package main
 
 import (
@@ -26,10 +10,9 @@ import (
 )
 
 const (
-	cdiVendor = "k8s." + DriverName
-	cdiClass  = "gpu"
-	cdiKind   = cdiVendor + "/" + cdiClass
-
+	cdiVendor           = "k8s." + DriverName
+	cdiClass            = "npu"
+	cdiKind             = cdiVendor + "/" + cdiClass
 	cdiCommonDeviceName = "common"
 )
 
@@ -83,35 +66,23 @@ func (cdi *CDIHandler) CreateCommonSpecFile() error {
 
 func (cdi *CDIHandler) CreateClaimSpecFile(claimUID string, devices PreparedDevices) error {
 	specName := cdiapi.GenerateTransientSpecName(cdiVendor, cdiClass, claimUID)
+	var merged cdispec.ContainerEdits
+	for _, d := range devices {
+		merged.Env = append(merged.Env, d.ContainerEdits.Env...)
+		merged.DeviceNodes = append(merged.DeviceNodes, d.ContainerEdits.DeviceNodes...)
+		merged.Hooks = append(merged.Hooks, d.ContainerEdits.Hooks...)
+		merged.Mounts = append(merged.Mounts, d.ContainerEdits.Mounts...)
+	}
 
 	spec := &cdispec.Spec{
-		Kind:    cdiKind,
-		Devices: []cdispec.Device{},
-	}
-
-	for _, device := range devices {
-		claimEdits := cdiapi.ContainerEdits{
-			ContainerEdits: &cdispec.ContainerEdits{
-				Env: []string{
-					fmt.Sprintf("GPU_DEVICE_%s_RESOURCE_CLAIM=%s", device.DeviceName[4:], claimUID),
-				},
+		Kind: cdiKind,
+		Devices: []cdispec.Device{
+			{
+				Name:           claimUID,
+				ContainerEdits: merged,
 			},
-		}
-		claimEdits.Append(device.ContainerEdits)
-
-		cdiDevice := cdispec.Device{
-			Name:           fmt.Sprintf("%s-%s", claimUID, device.DeviceName),
-			ContainerEdits: *claimEdits.ContainerEdits,
-		}
-
-		spec.Devices = append(spec.Devices, cdiDevice)
+		},
 	}
-
-	minVersion, err := cdiapi.MinimumRequiredVersion(spec)
-	if err != nil {
-		return fmt.Errorf("failed to get minimum required CDI spec version: %v", err)
-	}
-	spec.Version = minVersion
 
 	return cdi.cache.WriteSpec(spec, specName)
 }
@@ -124,11 +95,7 @@ func (cdi *CDIHandler) DeleteClaimSpecFile(claimUID string) error {
 func (cdi *CDIHandler) GetClaimDevices(claimUID string, devices []string) []string {
 	cdiDevices := []string{
 		cdiparser.QualifiedName(cdiVendor, cdiClass, cdiCommonDeviceName),
-	}
-
-	for _, device := range devices {
-		cdiDevice := cdiparser.QualifiedName(cdiVendor, cdiClass, fmt.Sprintf("%s-%s", claimUID, device))
-		cdiDevices = append(cdiDevices, cdiDevice)
+		cdiparser.QualifiedName(cdiVendor, cdiClass, claimUID),
 	}
 
 	return cdiDevices
